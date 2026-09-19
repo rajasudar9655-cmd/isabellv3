@@ -1,0 +1,2 @@
+- [Isabella model boundary](isabella-model-boundary.md) — Keep the first release local-first and source-aware; never imply it is a newly trained frontier model without a real model pipeline.
+- [Isabella voice provider](isabella-voice-provider.md) — Voice uses NVIDIA model-specific ASR/TTS endpoints; keep voice credentials isolated from text chat.

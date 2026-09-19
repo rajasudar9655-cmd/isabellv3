@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Isabella AI"
+description = "A calm, capable AI workspace for asking questions, researching the web, creating content, and organizing conversations with a trustworthy assistant named Isabella."
+version = "1.0.0"
+id = "artifacts/isabella-ai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23798
+
+[services.development]
+run = "pnpm --filter @workspace/isabella-ai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/isabella-ai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/isabella-ai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23798"
+BASE_PATH = "/"
