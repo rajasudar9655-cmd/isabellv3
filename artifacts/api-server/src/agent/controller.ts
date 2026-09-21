@@ -20,6 +20,7 @@ import {
   wikipediaSearchTool,
   wikipediaArticleTool,
 } from "./tools/wikipedia.ts";
+ import { huggingFaceTool } from "./tools/huggingface.ts";
 
 const ALWAYS_ON_TOOLS = [timeTool];
 
@@ -27,6 +28,7 @@ const TOOL_PLUGIN_MAP: Record<string, ToolDefinition[]> = {
   "web-search": [webSearchTool, webFetchTool],
   calculator: [calculatorTool],
   "file-analyzer": [fileListTool, fileReadTool, fileSearchTool],
+  huggingface: [huggingFaceTool],
 };
 
 function uniqueTools(
