@@ -188,6 +188,10 @@ function buildSystemPrompt(
     "Do not use tools for simple conversation when a direct answer is enough.",
     "Do not call multiple tools unless the task actually requires them.",
     "If a previous tool result is insufficient, choose another available tool rather than guessing.",
+    "Use huggingface_specialist for specialist AI tasks when a dedicated Hugging Face model can provide useful additional capability.",
+    "Use huggingface_specialist for tasks such as specialized text analysis, classification, structured transformation, or other model-specific work.",
+    "Do not use huggingface_specialist for ordinary conversation when Nemotron can answer directly.",
+    "Use at most one huggingface_specialist call unless another call is genuinely necessary.",
 
     request.mode ? `User mode: ${request.mode}` : "",
 
