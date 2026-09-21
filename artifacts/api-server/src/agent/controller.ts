@@ -4,7 +4,10 @@ import { calculatorTool } from "./tools/calculator.ts";
 import { timeTool } from "./tools/time.ts";
 import { webFetchTool, webSearchTool } from "./tools/web.ts";
 import { fileListTool, fileReadTool, fileSearchTool } from "./tools/files.ts";
-
+import {
+  wikipediaSearchTool,
+  wikipediaArticleTool,
+} from "./tools/wikipedia.ts";
 const ALWAYS_ON_TOOLS = [timeTool];
 
 const TOOL_PLUGIN_MAP: Record<string, ToolDefinition[]> = {
