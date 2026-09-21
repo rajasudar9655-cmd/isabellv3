@@ -13,18 +13,23 @@ export const huggingFaceTool: ToolDefinition = {
       type: "string",
       description: "Task for the specialist model",
     },
+
     model: {
       type: "string",
       description:
         "Optional Hugging Face model ID. Example: openai/gpt-oss-120b:fastest",
     },
+
     maxTokens: {
       type: "number",
       description: "Maximum output tokens, normally 256-1024",
     },
   },
 
-  async execute(arguments_, context): Promise<ToolResult> {
+  async execute(
+    arguments_,
+    context,
+  ): Promise<ToolResult> {
     const token = process.env.HF_TOKEN;
 
     if (!token) {
@@ -48,34 +53,48 @@ export const huggingFaceTool: ToolDefinition = {
     }
 
     const model =
-      typeof arguments_.model === "string" && arguments_.model.trim()
+      typeof arguments_.model === "string" &&
+      arguments_.model.trim()
         ? arguments_.model.trim()
-        : process.env.HF_MODEL || "openai/gpt-oss-120b:fastest";
+        : process.env.HF_MODEL ||
+          "openai/gpt-oss-120b:fastest";
 
+    // Keep the full specialist output capability.
     const maxTokens = Math.min(
       1024,
-      Math.max(128, Number(arguments_.maxTokens) || 512),
+      Math.max(
+        128,
+        Number(arguments_.maxTokens) || 512,
+      ),
     );
 
     try {
       const response = await fetch(HF_URL, {
         method: "POST",
         signal: context.signal,
+
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
+          Accept: "text/event-stream",
         },
+
         body: JSON.stringify({
           model,
+
           messages: [
             {
               role: "user",
               content: prompt,
             },
           ],
+
           max_tokens: maxTokens,
+
           temperature: 0.2,
-          stream: false,
+
+          // Hugging Face streaming enabled.
+          stream: true,
         }),
       });
 
@@ -84,41 +103,151 @@ export const huggingFaceTool: ToolDefinition = {
 
         return {
           ok: false,
-          content: `Hugging Face returned HTTP ${response.status}: ${detail.slice(
-            0,
-            500,
-          )}`,
+          content:
+            `Hugging Face returned HTTP ${response.status}: ` +
+            detail.slice(0, 500),
         };
       }
 
-      const data = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
-      };
-
-      const answer = data.choices?.[0]?.message?.content?.trim();
-
-      if (!answer) {
+      if (!response.body) {
         return {
           ok: false,
-          content: "Hugging Face returned an empty response.",
+          content:
+            "Hugging Face returned no streaming body.",
+        };
+      }
+
+      const reader =
+        response.body.getReader();
+
+      const decoder =
+        new TextDecoder();
+
+      let buffer = "";
+      let answer = "";
+
+      const processLine = (
+        line: string,
+      ) => {
+        const trimmed =
+          line.trim();
+
+        // Ignore empty SSE lines.
+        if (!trimmed) {
+          return;
+        }
+
+        // Ignore SSE comments.
+        if (trimmed.startsWith(":")) {
+          return;
+        }
+
+        // We only need data events.
+        if (!trimmed.startsWith("data:")) {
+          return;
+        }
+
+        const payload =
+          trimmed.slice(5).trim();
+
+        // End of stream.
+        if (
+          !payload ||
+          payload === "[DONE]"
+        ) {
+          return;
+        }
+
+        try {
+          const chunk =
+            JSON.parse(payload) as {
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                };
+              }>;
+            };
+
+          const piece =
+            chunk.choices?.[0]?.delta
+              ?.content || "";
+
+          if (piece) {
+            answer += piece;
+          }
+        } catch {
+          // Ignore malformed chunks.
+        }
+      };
+
+      while (true) {
+        const {
+          value,
+          done,
+        } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer +=
+          decoder.decode(value, {
+            stream: true,
+          });
+
+        const lines =
+          buffer.split("\n");
+
+        // Preserve an incomplete final line.
+        buffer =
+          lines.pop() || "";
+
+        for (const line of lines) {
+          processLine(line);
+        }
+      }
+
+      // Flush decoder.
+      buffer +=
+        decoder.decode();
+
+      if (buffer.trim()) {
+        for (const line of buffer.split("\n")) {
+          processLine(line);
+        }
+      }
+
+      const trimmedAnswer =
+        answer.trim();
+
+      if (!trimmedAnswer) {
+        return {
+          ok: false,
+          content:
+            "Hugging Face returned an empty response.",
         };
       }
 
       return {
         ok: true,
-        content: answer,
+
+        content:
+          trimmedAnswer,
+
         metadata: {
-          provider: "huggingface",
+          provider:
+            "huggingface",
+
           model,
+
+          streaming:
+            true,
         },
       };
     } catch (error) {
       return {
         ok: false,
+
         content:
           error instanceof Error
             ? error.message
