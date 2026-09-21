@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import {
   ArrowUp,
@@ -673,8 +674,9 @@ function Shell({
           </div>
 
           {/* Floating plugin panel */}
-          {showPlugins && (
-            <div
+          {showPlugins &&
+             createPortal(
+    <div
               role="dialog"
               aria-label="Isabella plugins"
               style={{
@@ -731,24 +733,36 @@ function Shell({
                 </div>
 
                 <button
-                  type="button"
-                  onClick={() => setShowPlugins(false)}
-                  aria-label="Close plugins"
-                  style={{
-                    width: 34,
-                    height: 34,
-                    display: 'grid',
-                    placeItems: 'center',
-                    borderRadius: 12,
-                    border:
-                      '1px solid rgba(125, 83, 140, 0.12)',
-                    background:
-                      'rgba(255,255,255,0.75)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <X size={16} />
-                </button>
+  type="button"
+  onPointerDown={(event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setShowPlugins(false);
+  }}
+  onClick={(event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setShowPlugins(false);
+  }}
+  aria-label="Close plugins"
+  style={{
+    width: 34,
+    height: 34,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: 12,
+    border:
+      '1px solid rgba(125, 83, 140, 0.12)',
+    background:
+      'rgba(255,255,255,0.75)',
+    cursor: 'pointer',
+    position: 'relative',
+    zIndex: 1002,
+    pointerEvents: 'auto',
+  }}
+>
+  <X size={16} />
+</button>
               </div>
 
               <div
@@ -917,7 +931,8 @@ function Shell({
                   },
                 )}
               </div>
-            </div>
+            </div>,
+            document.body,
           )}
 
           <div className="rail-spacer" />
