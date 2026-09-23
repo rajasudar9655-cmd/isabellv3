@@ -460,6 +460,7 @@ export class AgentController {
     const sources: AgentResult["sources"] = [];
     const memoryWrites: AgentResult["memoryWrites"] = [];
     let videoUrl: string | undefined;
+    let finalAnswer = "";
 
     const contextMessages: ChatMessage[] = [
       {
@@ -510,11 +511,11 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "GitHub is reading README.md…",
+        message: "GitHub is reading README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
       });
       emit({
         type: "tool_call",
-        message: "GitHub is reading README.md…",
+        message: "GitHub is reading README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         tool: "github",
         arguments: readArguments,
       });
@@ -555,7 +556,7 @@ export class AgentController {
       if (readmeInsufficient) {
         emit({
           type: "status",
-          message: "README.md is insufficient; GitHub is exploring the repository…",
+          message: "README.md is insufficient; GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         });
 
         const overview = await github.execute(
@@ -571,7 +572,7 @@ export class AgentController {
 
         emit({
           type: "tool_call",
-          message: "GitHub is exploring the repository…",
+          message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
           tool: "github",
           arguments: {
             action: "project_overview",
@@ -604,13 +605,13 @@ export class AgentController {
         const selectedPaths = extractSelectedFilePaths(overview);
         if (selectedPaths.length) {
           for (const path of selectedPaths) {
-            emit({ type: "status", message: `GitHub is reading ${path}…` });
+            emit({ type: "status", message: `GitHub is reading ${path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦` });
           }
         }
 
         emit({
           type: "status",
-          message: "Isabella is analyzing the project…",
+          message: "Isabella is analyzing the projectÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         });
 
         const evidencePrompt = extractEvidencePrompt(overview);
@@ -644,7 +645,7 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "Isabella is analyzing README.md…",
+        message: "Isabella is analyzing README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
       });
 
       const readmePrompt = [
@@ -710,11 +711,11 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "GitHub is exploring the repository…",
+        message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
       });
       emit({
         type: "tool_call",
-        message: "GitHub is exploring the repository…",
+        message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         tool: "github",
         arguments: overviewArguments,
       });
@@ -749,12 +750,12 @@ export class AgentController {
       }
 
       for (const path of selectedPaths) {
-        emit({ type: "status", message: `GitHub is reading ${path}…` });
+        emit({ type: "status", message: `GitHub is reading ${path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦` });
       }
 
       emit({
         type: "status",
-        message: "Isabella is analyzing the project…",
+        message: "Isabella is analyzing the projectÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
       });
 
       const evidencePrompt = extractEvidencePrompt(overview);
@@ -812,7 +813,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: `GitHub is reading ${fileRequest.path}…`,
+        message: `GitHub is reading ${fileRequest.path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦`,
         tool: "github",
         arguments: githubArguments,
       });
@@ -879,7 +880,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: "GitHub is searching repositories…",
+        message: "GitHub is searching repositoriesÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         tool: "github",
         arguments: githubArguments,
       });
@@ -936,7 +937,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: "Higgsfield is generating your video…",
+        message: "Higgsfield is generating your videoÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
         tool: "higgsfield_video",
         arguments: videoArguments,
       });
@@ -959,7 +960,7 @@ export class AgentController {
 
       if (!result.ok) throw new Error(result.content);
 
-      finalAnswer = "Done — I generated your video with Higgsfield.";
+      finalAnswer = "Done ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â I generated your video with Higgsfield.";
 
       emit({
         type: "final",
@@ -978,9 +979,7 @@ export class AgentController {
     /* --------------------------------------------------------------------- */
     /* Normal agent loop for everything else.                                */
     /* --------------------------------------------------------------------- */
-    let finalAnswer = "";
-
-    for (let iteration = 0; iteration < maxSteps; iteration += 1) {
+for (let iteration = 0; iteration < maxSteps; iteration += 1) {
       if (signal?.aborted) {
         throw new Error("The agent request was cancelled.");
       }
@@ -1034,7 +1033,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: `${tool.name} is working…`,
+        message: `${tool.name} is workingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦`,
         tool: tool.name,
         arguments: arguments_,
       });
