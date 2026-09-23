@@ -22,6 +22,7 @@ import {
   ExternalLink,
   FileText,
   Grid2X2,
+  Github,
   Languages,
   Lightbulb,
   ListTodo,
@@ -76,6 +77,7 @@ type Message = {
   text: string;
   sources?: Source[];
   files?: UploadedFile[];
+  videoUrl?: string;
 };
 
 type Conversation = {
@@ -100,8 +102,9 @@ type PluginId =
   | 'calculator'
   | 'translator'
   | 'summarizer'
-  | 'huggingface';
-
+  | 'huggingface'
+  | 'higgsfield-video'
+  | 'github';
 type AgentStep = {
   id: string;
   type:
@@ -132,7 +135,7 @@ type Plugin = {
 
 const PLUGIN_STORAGE_KEY = 'isabella-enabled-plugins';
 const PLUGIN_VERSION_KEY = 'isabella-plugin-version';
-const CURRENT_PLUGIN_VERSION = 2;
+const CURRENT_PLUGIN_VERSION = 4;
 
 const availablePlugins: Plugin[] = [
   {
@@ -172,6 +175,23 @@ const availablePlugins: Plugin[] = [
     name: 'Hugging Face',
     description: 'Specialist AI models and inference',
     icon: Sparkles,
+    enabled: true,
+    status: 'ready',
+  },
+  {
+  id: 'higgsfield-video',
+  name: 'Higgsfield Video',
+  description:
+    'Generate AI videos from text prompts',
+  icon: Sparkles,
+  enabled: true,
+  status: 'ready',
+},
+  {
+    id: 'github',
+    name: 'GitHub',
+    description: 'Search repositories, code, files, issues, and pull requests',
+    icon: Github,
     enabled: true,
     status: 'ready',
   },
@@ -262,7 +282,12 @@ function getInitialEnabledPlugins(): PluginId[] {
 
   if (version < CURRENT_PLUGIN_VERSION) {
     const migrated = Array.from(
-      new Set([...stored, 'huggingface' as PluginId]),
+      new Set([
+        ...stored,
+        'huggingface' as PluginId,
+        'higgsfield-video' as PluginId,
+        'github' as PluginId,
+      ]),
     );
 
     localStorage.setItem(
@@ -326,6 +351,7 @@ async function streamAgent(
   text: string;
   sources: Source[];
   memoryWrites: MemoryItem[];
+  videoUrl?: string;
 }> {
   const prefs = readStore<Preferences>(
     'isabella-preferences',
@@ -393,6 +419,7 @@ async function streamAgent(
       text: string;
       sources: Source[];
       memoryWrites: MemoryItem[];
+      videoUrl?: string;
     } | null;
   } = {
     value: null,
@@ -409,6 +436,7 @@ async function streamAgent(
             text: string;
             sources?: Source[];
             memoryWrites?: MemoryItem[];
+            videoUrl?: string;
           };
         }
       | {
@@ -421,6 +449,7 @@ async function streamAgent(
         text: event.result.text,
         sources: event.result.sources || [],
         memoryWrites: event.result.memoryWrites || [],
+        videoUrl: event.result.videoUrl,
       };
     } else if (event.type === 'error') {
       throw new Error(event.message);
@@ -2127,6 +2156,7 @@ function Chat() {
         role: 'assistant',
         text: found.text,
         sources: found.sources,
+        videoUrl: found.videoUrl,
       };
 
       setMessages((current) => [
@@ -2335,6 +2365,34 @@ function Chat() {
               <div className="message-bubble">
                 {message.text}
               </div>
+
+              {message.videoUrl ? (
+                <div
+                  style={{
+                    marginTop: 12,
+                    width: '100%',
+                    maxWidth: 720,
+                    overflow: 'hidden',
+                    borderRadius: 16,
+                    border:
+                      '1px solid rgba(255,255,255,0.12)',
+                    background:
+                      'rgba(255,255,255,0.04)',
+                  }}
+                >
+                  <video
+                    src={message.videoUrl}
+                    controls
+                    playsInline
+                    preload="metadata"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      borderRadius: 16,
+                    }}
+                  />
+                </div>
+              ) : null}
 
               {message.files?.length ? (
                 <div className="message-files">

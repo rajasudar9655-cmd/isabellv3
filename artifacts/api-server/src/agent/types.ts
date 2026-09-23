@@ -42,6 +42,7 @@ export type ToolResult = {
   content: string;
   sources?: Source[];
   metadata?: Record<string, unknown>;
+  videoUrl?: string;
 };
 
 export type AgentStep = {
@@ -82,6 +83,7 @@ export type AgentResult = {
   sources: Source[];
   steps: AgentStep[];
   memoryWrites: Array<{ key: string; value: string }>;
+  videoUrl?: string;
 };
 
 export type AgentEvent =

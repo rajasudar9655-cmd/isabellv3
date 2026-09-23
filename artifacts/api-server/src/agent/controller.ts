@@ -15,12 +15,13 @@ import { calculatorTool } from "./tools/calculator.ts";
 import { timeTool } from "./tools/time.ts";
 import { webFetchTool, webSearchTool } from "./tools/web.ts";
 import { fileListTool, fileReadTool, fileSearchTool } from "./tools/files.ts";
-
+import { higgsfieldVideoTool } from "./tools/higgsfield.ts";
 import {
   wikipediaSearchTool,
   wikipediaArticleTool,
 } from "./tools/wikipedia.ts";
- import { huggingFaceTool } from "./tools/huggingface.ts";
+import { huggingFaceTool } from "./tools/huggingface.ts";
+import { githubTool } from "./tools/github.ts";
 
 const ALWAYS_ON_TOOLS = [timeTool];
 
@@ -29,6 +30,8 @@ const TOOL_PLUGIN_MAP: Record<string, ToolDefinition[]> = {
   calculator: [calculatorTool],
   "file-analyzer": [fileListTool, fileReadTool, fileSearchTool],
   huggingface: [huggingFaceTool],
+  github: [githubTool],
+  "higgsfield-video": [higgsfieldVideoTool],
 };
 
 function uniqueTools(
@@ -147,6 +150,107 @@ function lastUserMessage(request: AgentRequest): string {
   );
 }
 
+function isExplicitVideoGenerationRequest(
+  request: AgentRequest,
+): boolean {
+  const text = lastUserMessage(request).toLowerCase();
+
+  const hasVideoNoun =
+    /\b(video|videos|clip|movie|animation|animate|film)\b/.test(text);
+
+  const hasGenerationVerb =
+    /\b(generate|create|make|produce|render|animate|turn|convert)\b/.test(text);
+
+  return hasVideoNoun && hasGenerationVerb;
+}
+
+
+function isExplicitGitHubSearchRequest(
+  request: AgentRequest,
+): boolean {
+  const text = lastUserMessage(request).toLowerCase();
+
+  const mentionsGitHub = /\bgithub\b/.test(text);
+  const searchIntent = /\b(search|find|look\s*up)\b/.test(text);
+  const repositoryIntent = /\b(repo|repos|repository|repositories|code|issue|issues|pull\s*request|pr)\b/.test(text);
+
+  return mentionsGitHub && searchIntent && repositoryIntent;
+}
+
+function extractGitHubSearchQuery(request: AgentRequest): string {
+  const original = lastUserMessage(request).trim();
+  const normalized = original.replace(/\s+/g, ' ');
+
+  const aboutMatch = normalized.match(/\babout\s+(.+?)(?:\.|$)/i);
+  if (aboutMatch?.[1]) return aboutMatch[1].trim();
+
+  const forMatch = normalized.match(/\bfor\s+(.+?)(?:\.|$)/i);
+  if (forMatch?.[1]) {
+    return forMatch[1]
+      .replace(/^(repositories?|repos?|code|issues?|pull\s+requests?)\s+(?:about|on|for)\s+/i, '')
+      .trim();
+  }
+
+  return normalized
+    .replace(/^[^:]*?:/i, '')
+    .replace(/\b(search|find|look\s*up)\b/gi, '')
+    .replace(/\bgithub\b/gi, '')
+    .replace(/\b(repositories?|repos?|code|issues?|pull\s*requests?|for)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+
+function isExplicitGitHubFileReadRequest(
+  request: AgentRequest,
+): boolean {
+  const text = lastUserMessage(request).toLowerCase();
+
+  const mentionsGitHub = /\bgithub\b/.test(text);
+  const readIntent =
+    /\b(read|show|open|inspect|view|fetch|get)\b/.test(text);
+  const fileIntent =
+    /\b(readme(?:\.md)?|file|source|code|contents?|\.md|\.ts|\.tsx|\.js|\.json|\.py|\.yaml|\.yml|\.toml)\b/.test(
+      text,
+    );
+  const hasRepository =
+    /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(text);
+
+  return mentionsGitHub && readIntent && fileIntent && hasRepository;
+}
+
+function extractGitHubFileRequest(
+  request: AgentRequest,
+): { repository: string; path: string } | null {
+  const original = lastUserMessage(request).replace(/\s+/g, " ").trim();
+
+  const repoMatch = original.match(
+    /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/,
+  );
+
+  if (!repoMatch?.[1]) return null;
+
+  const repository = repoMatch[1];
+
+  const readmeMatch = original.match(
+    /\b(readme(?:\.md)?)\b/i,
+  );
+
+  if (readmeMatch) {
+    return { repository, path: "README.md" };
+  }
+
+  const pathMatch = original.match(
+    /\b([A-Za-z0-9_.-]+\.(?:md|mdx|txt|ts|tsx|js|jsx|json|py|yaml|yml|toml|css|html))\b/i,
+  );
+
+  if (pathMatch?.[1]) {
+    return { repository, path: pathMatch[1] };
+  }
+
+  return null;
+}
+
 function buildSystemPrompt(
   request: AgentRequest,
   tools: ToolDefinition[],
@@ -192,6 +296,14 @@ function buildSystemPrompt(
     "Use huggingface_specialist for tasks such as specialized text analysis, classification, structured transformation, or other model-specific work.",
     "Do not use huggingface_specialist for ordinary conversation when Nemotron can answer directly.",
     "Use at most one huggingface_specialist call unless another call is genuinely necessary.",
+    "Use github for GitHub searches and repository data when the GitHub plugin is available.",
+    "For requests to search GitHub repositories, call github with action=search_repositories and the user's topic as query.",
+    "After a successful GitHub tool call, use the returned repository data to provide the user-facing answer.",
+    "Do not stop after a GitHub tool call without producing a final answer.",
+    "For an explicit request to read or show a GitHub file, read that file first, then answer from its contents; do not stop after the tool call.",
+    "Use higgsfield_video for explicit video generation requests when the higgsfield-video plugin is enabled.",
+    "Never claim that you cannot call Higgsfield when higgsfield_video is present in the available tools.",
+    "When higgsfield_video is selected, the tool itself performs the external video generation.",
 
     request.mode ? `User mode: ${request.mode}` : "",
 
@@ -231,8 +343,27 @@ export class AgentController {
     onEvent?: (event: AgentEvent) => void,
     signal?: AbortSignal,
   ): Promise<AgentResult> {
+    const requestedPlugins = [...(request.plugins || [])];
+
+    if (
+      (isExplicitGitHubSearchRequest(request) ||
+        isExplicitGitHubFileReadRequest(request)) &&
+      !requestedPlugins.includes("github")
+    ) {
+      requestedPlugins.push("github");
+    }
+
+    // Explicit video-generation requests should always have the Higgsfield
+    // capability available, even if the user did not toggle the plugin on.
+    if (
+      isExplicitVideoGenerationRequest(request) &&
+      !requestedPlugins.includes("higgsfield-video")
+    ) {
+      requestedPlugins.push("higgsfield-video");
+    }
+
     const tools = uniqueTools(
-      request.plugins,
+      requestedPlugins,
       request.preferences?.web !== false,
     );
 
@@ -278,6 +409,303 @@ export class AgentController {
     });
 
     let finalAnswer = "";
+    let videoUrl: string | undefined;
+
+    /*
+     * Deterministic GitHub file-read path:
+     * For explicit requests such as "Read the README.md from owner/repo",
+     * call GitHub directly, then use Nemotron once to explain the file.
+     */
+    if (isExplicitGitHubFileReadRequest(request)) {
+      const github = toolByName.get("github");
+
+      if (!github) {
+        throw new Error(
+          "GitHub is required for this request, but the github tool is not registered.",
+        );
+      }
+
+      const fileRequest = extractGitHubFileRequest(request);
+
+      if (!fileRequest) {
+        throw new Error(
+          "I could not determine which GitHub repository and file to read.",
+        );
+      }
+
+      const githubArguments: Record<string, unknown> = {
+        action: "get_file",
+        repository: fileRequest.repository,
+        path: fileRequest.path,
+      };
+
+      emit({
+        type: "tool_call",
+        message: "GitHub is reading the repository file…",
+        tool: "github",
+        arguments: githubArguments,
+      });
+
+      if (signal?.aborted) {
+        throw new Error("The GitHub request was cancelled.");
+      }
+
+      const result = await github.execute(
+        githubArguments,
+        {
+          files: request.files || [],
+          signal,
+        },
+      );
+
+      emit({
+        type: "tool_result",
+        message: result.ok
+          ? "GitHub returned the repository file."
+          : "GitHub file read failed.",
+        tool: "github",
+        ok: result.ok,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.content);
+      }
+
+      if (result.sources) {
+        for (const source of result.sources) {
+          if (!sources.some((item) => item.url === source.url)) {
+            sources.push(source);
+          }
+        }
+      }
+
+      const fileContent = result.content.trim();
+      const normalizedFileContent = fileContent
+        .replace(/\u0000/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // Never let the model invent project details when the requested file
+      // is empty, malformed, or clearly too small to support an explanation.
+      const looksLikeEmptyReadme =
+        fileRequest.path.toLowerCase() === "readme.md" &&
+        normalizedFileContent.replace(/^#+\s*/, "").trim().length < 80;
+
+      if (looksLikeEmptyReadme) {
+        finalAnswer =
+          `I read ${fileRequest.path} from ${fileRequest.repository}. ` +
+          `The README is essentially empty and only contains the project title, so it does not document how the project works. ` +
+          `I would need to inspect the repository's source files to explain the architecture accurately.`;
+
+        emit({
+          type: "final",
+          message: "Isabella reported that the README lacks project documentation.",
+        });
+
+        return {
+          text: finalAnswer,
+          sources,
+          steps,
+          memoryWrites,
+          videoUrl,
+        };
+      }
+
+      contextMessages.push({
+        role: "user",
+        content:
+          `GITHUB FILE RESULT (${fileRequest.repository}/${fileRequest.path}):\n${result.content}\n\n` +
+          "Now explain how this project works using only the GitHub file content above. " +
+          "Do not invent any details that are not supported by the file. " +
+          "Do not call another GitHub tool unless the file explicitly indicates that another file is required. " +
+          "Return a normal user-facing explanation, not JSON.",
+      });
+
+      const raw = await this.model.complete(
+        contextMessages,
+        { signal },
+      );
+
+      const action = parseAction(raw);
+
+      finalAnswer =
+        action?.type === "final"
+          ? action.answer.trim()
+          : raw.trim();
+
+      emit({
+        type: "final",
+        message: "Isabella explained the GitHub project.",
+      });
+
+      return {
+        text: finalAnswer || "I could not explain the GitHub project.",
+        sources,
+        steps,
+        memoryWrites,
+        videoUrl,
+      };
+    }
+
+    /*
+     * Deterministic GitHub search path:
+     * Explicit GitHub searches should not depend on the model
+     * producing a second JSON action after the tool result.
+     */
+    if (isExplicitGitHubSearchRequest(request)) {
+      const github = toolByName.get("github");
+
+      if (!github) {
+        throw new Error(
+          "GitHub is required for this request, but the github tool is not registered.",
+        );
+      }
+
+      const query = extractGitHubSearchQuery(request);
+
+      if (!query) {
+        throw new Error(
+          "I could not determine what to search for on GitHub.",
+        );
+      }
+
+      const githubArguments: Record<string, unknown> = {
+        action: "search_repositories",
+        query,
+        limit: 5,
+      };
+
+      emit({
+        type: "tool_call",
+        message: "GitHub is searching repositories…",
+        tool: "github",
+        arguments: githubArguments,
+      });
+
+      if (signal?.aborted) {
+        throw new Error("The GitHub request was cancelled.");
+      }
+
+      const result = await github.execute(
+        githubArguments,
+        {
+          files: request.files || [],
+          signal,
+        },
+      );
+
+      emit({
+        type: "tool_result",
+        message: result.ok
+          ? "GitHub returned repository results."
+          : "GitHub search failed.",
+        tool: "github",
+        ok: result.ok,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.content);
+      }
+
+      if (result.sources) {
+        sources.push(...result.sources);
+      }
+
+      emit({
+        type: "final",
+        message: "Isabella completed the GitHub search.",
+      });
+
+      return {
+        text: result.content,
+        sources,
+        steps,
+        memoryWrites,
+      };
+    }
+
+    /*
+     * Deterministic video path:
+     * When the user explicitly asks to generate a video, do not
+     * depend on the language model deciding whether the external
+     * video tool is callable. Call the registered tool directly.
+     */
+    if (
+      isExplicitVideoGenerationRequest(request)
+    ) {
+      const videoTool =
+        toolByName.get("higgsfield_video");
+
+      if (!videoTool) {
+        throw new Error(
+          "Higgsfield Video is required for this request, but the higgsfield_video tool is not registered.",
+        );
+      }
+
+      const prompt =
+        lastUserMessage(request).trim();
+
+      const videoArguments: Record<string, unknown> = {
+        prompt,
+        duration: 5,
+        resolution: "720p",
+        aspect_ratio: "16:9",
+        generate_audio: true,
+      };
+
+      emit({
+        type: "tool_call",
+        message: "Higgsfield is generating your video…",
+        tool: "higgsfield_video",
+        arguments: videoArguments,
+      });
+
+      if (signal?.aborted) {
+        throw new Error("The video request was cancelled.");
+      }
+
+      const result =
+        await videoTool.execute(
+          videoArguments,
+          {
+            files: request.files || [],
+            signal,
+          },
+        );
+
+      if (result.videoUrl) {
+        videoUrl = result.videoUrl;
+      }
+
+      emit({
+        type: "tool_result",
+        message: result.ok
+          ? "Higgsfield generated the video."
+          : "Higgsfield video generation failed.",
+        tool: "higgsfield_video",
+        ok: result.ok,
+      });
+
+      if (!result.ok) {
+        throw new Error(result.content);
+      }
+
+      finalAnswer =
+        "Done — I generated your video with Higgsfield.";
+
+      emit({
+        type: "final",
+        message: "Isabella completed the video.",
+      });
+
+      return {
+        text: finalAnswer,
+        sources,
+        steps,
+        memoryWrites,
+        videoUrl,
+      };
+    }
 
     for (
       let iteration = 0;
@@ -358,6 +786,10 @@ export class AgentController {
         signal,
       });
 
+      if (result.videoUrl) {
+        videoUrl = result.videoUrl;
+      }
+
       emit({
         type: "tool_result",
         message: result.ok
@@ -420,6 +852,7 @@ Use this result as evidence. Continue the task or return a final answer.`,
       sources,
       steps,
       memoryWrites,
+      videoUrl,
     };
   }
 }
