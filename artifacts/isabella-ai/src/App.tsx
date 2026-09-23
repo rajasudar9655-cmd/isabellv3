@@ -419,7 +419,6 @@ async function streamAgent(
       text: string;
       sources: Source[];
       memoryWrites: MemoryItem[];
-      videoUrl?: string;
     } | null;
   } = {
     value: null,
@@ -1988,6 +1987,19 @@ function Home({
   );
 }
 
+function formatAgentStepMessage(step: AgentStep): string {
+  const message = step.message.trim();
+
+  if (message) return message;
+
+  if (step.tool === 'github') {
+    if (step.type === 'tool_call') return 'GitHub is working…';
+    if (step.type === 'tool_result') return 'GitHub returned a result.';
+  }
+
+  return 'Isabella is working…';
+}
+
 function Chat() {
   const [, setLocation] = useLocation();
 
@@ -2366,34 +2378,6 @@ function Chat() {
                 {message.text}
               </div>
 
-              {message.videoUrl ? (
-                <div
-                  style={{
-                    marginTop: 12,
-                    width: '100%',
-                    maxWidth: 720,
-                    overflow: 'hidden',
-                    borderRadius: 16,
-                    border:
-                      '1px solid rgba(255,255,255,0.12)',
-                    background:
-                      'rgba(255,255,255,0.04)',
-                  }}
-                >
-                  <video
-                    src={message.videoUrl}
-                    controls
-                    playsInline
-                    preload="metadata"
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      borderRadius: 16,
-                    }}
-                  />
-                </div>
-              ) : null}
-
               {message.files?.length ? (
                 <div className="message-files">
                   {message.files.map((file) => (
@@ -2422,6 +2406,24 @@ function Chat() {
                       {source.title}
                     </a>
                   ))}
+                </div>
+              ) : null}
+
+              {message.videoUrl ? (
+                <div
+                  className="source-row"
+                  style={{ marginTop: 8 }}
+                >
+                  <a
+                    className="source-link"
+                    href={message.videoUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-testid={`link-video-${message.id}`}
+                  >
+                    <ExternalLink size={10} />
+                    Open generated video
+                  </a>
                 </div>
               ) : null}
             </div>
@@ -2461,7 +2463,7 @@ function Chat() {
                   <span
                     className={`agent-trace-dot ${step.type}`}
                   />
-                  <span>{step.message}</span>
+                  <span>{formatAgentStepMessage(step)}</span>
                 </div>
               ))}
           </div>
