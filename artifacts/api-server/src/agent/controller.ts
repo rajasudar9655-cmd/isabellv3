@@ -28,6 +28,7 @@ const ALWAYS_ON_TOOLS: ToolDefinition[] = [timeTool];
 
 const TOOL_PLUGIN_MAP: Record<string, ToolDefinition[]> = {
   "web-search": [webSearchTool, webFetchTool],
+  wikipedia: [wikipediaSearchTool, wikipediaArticleTool],
   calculator: [calculatorTool],
   "file-analyzer": [fileListTool, fileReadTool, fileSearchTool],
   huggingface: [huggingFaceTool],
@@ -45,7 +46,7 @@ function uniqueTools(
     map.set(tool.name, tool);
   }
 
-  if (webEnabled) {
+  if (webEnabled && plugins.includes("wikipedia")) {
     map.set(wikipediaSearchTool.name, wikipediaSearchTool);
     map.set(wikipediaArticleTool.name, wikipediaArticleTool);
   }
@@ -149,6 +150,119 @@ function isExplicitVideoGenerationRequest(request: AgentRequest): boolean {
   return hasVideoNoun && hasGenerationVerb;
 }
 
+function isExplicitWikipediaRequest(request: AgentRequest): boolean {
+  const text = lastUserMessage(request).toLowerCase();
+  const mentionsWikipedia = /\bwikipedia\b/.test(text);
+  const intent = /\b(search|find|look\s*up|read|summari[sz]e|tell\s+me\s+about|article)\b/.test(text);
+  return mentionsWikipedia && intent;
+}
+
+function extractWikipediaQuery(request: AgentRequest): string {
+  const normalized = lastUserMessage(request).replace(/\s+/g, " ").trim();
+
+  const patterns = [
+    /\barticle\s+about\s+(.+?)(?:\s+and\s+(?:summari[sz]e|give|tell)|[.!?]|$)/i,
+    /\bsearch\s+(?:for\s+)?(.+?)(?:\s+and\s+(?:give|summari[sz]e|tell)|[.!?]|$)/i,
+    /\bfind\s+(?:the\s+)?(?:article\s+)?(?:about\s+)?(.+?)(?:\s+and\s+(?:summari[sz]e|give|tell)|[.!?]|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      const query = match[1]
+        .replace(/^the\s+/i, "")
+        .replace(/\bWikipedia\b/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (query) return query;
+    }
+  }
+
+  return normalized
+    .replace(/\buse\s+wikipedia\b/gi, "")
+    .replace(/\bwikipedia\b/gi, "")
+    .replace(/\b(search|find|look\s*up|read|summari[sz]e|tell\s+me\s+about)\b/gi, "")
+    .replace(/\b(the\s+)?article\s+(about|on)\b/gi, "")
+    .replace(/\b(and\s+)?(give|tell|summari[sz]e)\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[,.:;\s]+|[,.:;\s]+$/g, "")
+    .trim();
+}
+
+function normalizeWikipediaText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function chooseWikipediaArticleTitle(
+  query: string,
+  sources: Array<{ title?: string }> | undefined,
+): string | null {
+  const candidates = (sources || [])
+    .map((source) => (source.title || "").trim())
+    .filter(Boolean);
+
+  if (!candidates.length) return null;
+
+  const normalizedQuery = normalizeWikipediaText(query);
+  const queryTokens = new Set(normalizedQuery.split(" ").filter(Boolean));
+  const genericWords = new Set([
+    "article",
+    "about",
+    "mission",
+    "history",
+    "overview",
+    "information",
+    "facts",
+    "summary",
+    "summarize",
+    "summarise",
+  ]);
+  const topicTokens = [...queryTokens].filter((token) => !genericWords.has(token));
+  const topic = topicTokens.join(" ").trim();
+
+  let bestTitle = candidates[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const title of candidates) {
+    const normalizedTitle = normalizeWikipediaText(title);
+    const titleTokens = new Set(normalizedTitle.split(" ").filter(Boolean));
+    let score = 0;
+
+    if (topic && normalizedTitle === topic) score += 1000;
+    if (topic && normalizedTitle.startsWith(`${topic} `)) score += 700;
+    if (topic && normalizedTitle.includes(topic)) score += 450;
+    if (normalizedTitle === normalizedQuery) score += 650;
+
+    for (const token of topicTokens) {
+      if (titleTokens.has(token)) score += 80;
+    }
+
+    // Prefer concise topic articles over narrow subtopics (e.g.
+    // "Apollo 11" over "Apollo 11 missing tapes") when the user asks for
+    // the main topic.
+    const extraTokenCount = Math.max(0, titleTokens.size - topicTokens.length);
+    score -= extraTokenCount * 35;
+
+    if (/\bmissing tapes?\b/i.test(title) && !/\bmissing tapes?\b/i.test(query)) {
+      score -= 500;
+    }
+    if (/\b(popular culture|legacy|impact|reception)\b/i.test(title)) {
+      score -= 250;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestTitle = title;
+    }
+  }
+
+  return bestTitle;
+}
+
 function isExplicitGitHubSearchRequest(request: AgentRequest): boolean {
   const text = lastUserMessage(request).toLowerCase();
   const mentionsGitHub = /\bgithub\b/.test(text);
@@ -198,7 +312,13 @@ function isExplicitGitHubFileReadRequest(request: AgentRequest): boolean {
     );
   const hasRepository =
     /\b[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(text);
-  return mentionsGitHub && readIntent && fileIntent && hasRepository;
+  const hasExplicitRepositorySource =
+    /\bfrom\s+[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\b/.test(text);
+
+  return (mentionsGitHub || hasExplicitRepositorySource) &&
+    readIntent &&
+    fileIntent &&
+    hasRepository;
 }
 
 function isRepositoryOverviewRequest(request: AgentRequest): boolean {
@@ -234,12 +354,20 @@ function extractGitHubFileRequest(
 ): { repository: string; path: string } | null {
   const original = lastUserMessage(request).replace(/\s+/g, " ").trim();
 
-  const repoMatch = original.match(
-    /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/,
+  // Prefer the owner/name pair explicitly introduced by "from" or "repository"
+  // so a source path such as artifacts/api-server/... is never mistaken for
+  // the GitHub repository.
+  const explicitRepoMatch = original.match(
+    /\b(?:from|repository)\s+(?:repo\s+)?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/i,
   );
-  if (!repoMatch?.[1]) return null;
 
-  const repository = repoMatch[1];
+  const repoCandidates = original.match(
+    /\b([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\b/g,
+  ) || [];
+
+  const repository = explicitRepoMatch?.[1] || repoCandidates.at(-1) || "";
+
+  if (!repository) return null;
 
   const readmeMatch = original.match(/\b(readme(?:\.md)?)\b/i);
   if (readmeMatch) return { repository, path: "README.md" };
@@ -292,8 +420,9 @@ function buildSystemPrompt(
     'When the task is complete use: {"type":"final","answer":"answer","memory":[{"key":"...","value":"..."}]}.',
     "Only write memory when the user explicitly states a durable preference, identity detail, or stable project fact that is useful later. Keep memory minimal and non-sensitive.",
     "Tool selection rules:",
-    "Use wikipedia_search for stable encyclopedia-style topics such as history, biographies, science, technology, places, and general reference questions.",
-    "Use wikipedia_article after wikipedia_search when the answer needs more detailed information from a specific Wikipedia article.",
+    "Use wikipedia_search for stable encyclopedia-style topics such as history, biographies, science, technology, places, and general reference questions when the Wikipedia plugin is enabled.",
+    "Use wikipedia_article after wikipedia_search when the answer needs more detailed information from a specific Wikipedia article and the Wikipedia plugin is enabled.",
+    "If the Wikipedia plugin is not available, do not pretend to have Wikipedia access; use another available source or explain that the plugin is disabled.",
     "Use web_search for current, recent, changing, time-sensitive, price, product, company, news, or statistics questions.",
     "Use web_fetch when a specific public web page needs to be read in detail.",
     "Use calculator for arithmetic instead of doing complicated calculations mentally.",
@@ -486,6 +615,266 @@ export class AgentController {
     });
 
     /* --------------------------------------------------------------------- */
+    /* Step 9: keep ordinary GitHub search and file requests working.        */
+    /* --------------------------------------------------------------------- */
+    if (isExplicitGitHubFileReadRequest(request)) {
+      const github = toolByName.get("github");
+      if (!github) {
+        throw new Error(
+          "GitHub is required for this request, but the github tool is not registered.",
+        );
+      }
+
+      const fileRequest = extractGitHubFileRequest(request);
+      if (!fileRequest) {
+        throw new Error(
+          "I could not determine which GitHub repository and file to read.",
+        );
+      }
+
+      const githubArguments: Record<string, unknown> = {
+        action: "get_file",
+        repository: fileRequest.repository,
+        path: fileRequest.path,
+      };
+
+      emit({
+        type: "tool_call",
+        message: `GitHub is reading ${fileRequest.path}…`,
+        tool: "github",
+        arguments: githubArguments,
+      });
+
+      const result = await github.execute(githubArguments, {
+        files: request.files || [],
+        signal,
+      });
+
+      emit({
+        type: "tool_result",
+        message: result.ok
+          ? `GitHub returned ${fileRequest.path}.`
+          : `GitHub could not read ${fileRequest.path}.`,
+        tool: "github",
+        ok: result.ok,
+      });
+
+      if (!result.ok) throw new Error(result.content);
+      addSources(sources, result.sources);
+
+      contextMessages.push({
+        role: "user",
+        content:
+          `GITHUB FILE RESULT (${fileRequest.repository}/${fileRequest.path}):\n${result.content}\n\n` +
+          "Explain the requested file using only its actual contents. Do not invent details. Return a normal user-facing answer, not JSON.",
+      });
+
+      const raw = await this.model.complete(contextMessages, { signal });
+      finalAnswer = raw.trim();
+
+      emit({
+        type: "final",
+        message: "Isabella explained the GitHub file.",
+      });
+
+      return {
+        text: finalAnswer || result.content,
+        sources,
+        steps,
+        memoryWrites,
+        videoUrl,
+      };
+    }
+
+
+    /* --------------------------------------------------------------------- */
+    /* Deterministic Wikipedia path: search -> article -> final answer.      */
+    /* --------------------------------------------------------------------- */
+    if (isExplicitWikipediaRequest(request)) {
+      const wikipediaSearch = toolByName.get("wikipedia_search");
+      const wikipediaArticle = toolByName.get("wikipedia_article");
+
+      if (!wikipediaSearch || !wikipediaArticle) {
+        throw new Error(
+          "Wikipedia is required for this request, but the Wikipedia tools are not registered.",
+        );
+      }
+
+      const query = extractWikipediaQuery(request);
+      if (!query) {
+        throw new Error("I could not determine what to search for on Wikipedia.");
+      }
+
+      const searchArguments: Record<string, unknown> = {
+        query,
+        limit: 3,
+      };
+
+      emit({
+        type: "status",
+        message: "Wikipedia is searching…",
+      });
+      emit({
+        type: "tool_call",
+        message: "wikipedia_search is working…",
+        tool: "wikipedia_search",
+        arguments: searchArguments,
+      });
+
+      const searchResult = await wikipediaSearch.execute(searchArguments, {
+        files: request.files || [],
+        signal,
+      });
+
+      emit({
+        type: "tool_result",
+        message: searchResult.ok
+          ? "wikipedia_search returned a result."
+          : "wikipedia_search reported an error.",
+        tool: "wikipedia_search",
+        ok: searchResult.ok,
+      });
+
+      if (!searchResult.ok) {
+        throw new Error(searchResult.content);
+      }
+
+      addSources(sources, searchResult.sources);
+
+      const rankedTitle = chooseWikipediaArticleTitle(
+        query,
+        searchResult.sources,
+      );
+
+      const normalizedQuery = normalizeWikipediaText(query);
+      const queryTokens = normalizedQuery.split(" ").filter(Boolean);
+      const genericWords = new Set([
+        "article",
+        "about",
+        "mission",
+        "history",
+        "overview",
+        "information",
+        "facts",
+        "summary",
+        "summarize",
+        "summarise",
+      ]);
+      const topic = queryTokens
+        .filter((token) => !genericWords.has(token))
+        .join(" ")
+        .trim();
+
+      // Prefer the canonical main topic even when Wikipedia search ranks a
+      // narrow sub-article such as "Apollo 11 missing tapes" above it.
+      // wikipedia_article follows redirects, so "Apollo 11" can resolve to
+      // the canonical page even when that title was not among the top search
+      // results. If the preferred topic does not exist, fall back to the
+      // best search result.
+      const articleCandidates = [
+        topic,
+        rankedTitle || "",
+        normalizedQuery,
+      ]
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .filter((value, index, values) => values.indexOf(value) === index);
+
+      let articleTitle: string | null = null;
+      let articleResult: ToolResult | null = null;
+      let lastArticleError = "Wikipedia could not read the requested article.";
+
+      emit({
+        type: "status",
+        message: "Wikipedia is reading the article…",
+      });
+
+      for (const candidateTitle of articleCandidates) {
+        const articleArguments: Record<string, unknown> = {
+          title: candidateTitle,
+        };
+
+        emit({
+          type: "tool_call",
+          message: "wikipedia_article is working…",
+          tool: "wikipedia_article",
+          arguments: articleArguments,
+        });
+
+        const candidateResult = await wikipediaArticle.execute(
+          articleArguments,
+          {
+            files: request.files || [],
+            signal,
+          },
+        );
+
+        emit({
+          type: "tool_result",
+          message: candidateResult.ok
+            ? "wikipedia_article returned a result."
+            : "wikipedia_article reported an error.",
+          tool: "wikipedia_article",
+          ok: candidateResult.ok,
+        });
+
+        if (candidateResult.ok) {
+          articleTitle =
+            candidateResult.sources?.[0]?.title || candidateTitle;
+          articleResult = candidateResult;
+          break;
+        }
+
+        lastArticleError = candidateResult.content;
+      }
+
+      if (!articleResult || !articleTitle) {
+        throw new Error(lastArticleError);
+      }
+
+      addSources(sources, articleResult.sources);
+
+      emit({
+        type: "status",
+        message: "Isabella is summarizing the Wikipedia article…",
+      });
+
+      const answerMessages: ChatMessage[] = [
+        {
+          role: "system",
+          content:
+            "You are Isabella's answer writer. Use ONLY the supplied Wikipedia article content. Answer the user's request directly. Do not call tools, do not output JSON, and do not claim facts that are not supported by the article.",
+        },
+        {
+          role: "user",
+          content: [
+            `Original user request: ${lastUserMessage(request)}`,
+            `Wikipedia article: ${articleTitle}`,
+            "Wikipedia article content:",
+            articleResult.content,
+            "",
+            "Write the final user-facing answer now.",
+          ].join("\n"),
+        },
+      ];
+
+      finalAnswer = (await this.model.complete(answerMessages, { signal })).trim();
+
+      emit({
+        type: "final",
+        message: "Isabella completed the Wikipedia request.",
+      });
+
+      return {
+        text: finalAnswer || articleResult.content,
+        sources,
+        steps,
+        memoryWrites,
+        videoUrl,
+      };
+    }
+
+    /* --------------------------------------------------------------------- */
     /* Step 10: README request -> inspect README -> fallback to explorer.    */
     /* --------------------------------------------------------------------- */
     if (isReadmeProjectExplanationRequest(request)) {
@@ -511,11 +900,11 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "GitHub is reading README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "GitHub is reading README.md…",
       });
       emit({
         type: "tool_call",
-        message: "GitHub is reading README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "GitHub is reading README.md…",
         tool: "github",
         arguments: readArguments,
       });
@@ -556,7 +945,7 @@ export class AgentController {
       if (readmeInsufficient) {
         emit({
           type: "status",
-          message: "README.md is insufficient; GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+          message: "README.md is insufficient; GitHub is exploring the repository…",
         });
 
         const overview = await github.execute(
@@ -572,7 +961,7 @@ export class AgentController {
 
         emit({
           type: "tool_call",
-          message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+          message: "GitHub is exploring the repository…",
           tool: "github",
           arguments: {
             action: "project_overview",
@@ -605,13 +994,13 @@ export class AgentController {
         const selectedPaths = extractSelectedFilePaths(overview);
         if (selectedPaths.length) {
           for (const path of selectedPaths) {
-            emit({ type: "status", message: `GitHub is reading ${path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦` });
+            emit({ type: "status", message: `GitHub is reading ${path}…` });
           }
         }
 
         emit({
           type: "status",
-          message: "Isabella is analyzing the projectÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+          message: "Isabella is analyzing the project…",
         });
 
         const evidencePrompt = extractEvidencePrompt(overview);
@@ -645,7 +1034,7 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "Isabella is analyzing README.mdÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "Isabella is analyzing README.md…",
       });
 
       const readmePrompt = [
@@ -711,11 +1100,11 @@ export class AgentController {
 
       emit({
         type: "status",
-        message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "GitHub is exploring the repository…",
       });
       emit({
         type: "tool_call",
-        message: "GitHub is exploring the repositoryÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "GitHub is exploring the repository…",
         tool: "github",
         arguments: overviewArguments,
       });
@@ -750,12 +1139,12 @@ export class AgentController {
       }
 
       for (const path of selectedPaths) {
-        emit({ type: "status", message: `GitHub is reading ${path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦` });
+        emit({ type: "status", message: `GitHub is reading ${path}…` });
       }
 
       emit({
         type: "status",
-        message: "Isabella is analyzing the projectÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "Isabella is analyzing the project…",
       });
 
       const evidencePrompt = extractEvidencePrompt(overview);
@@ -787,78 +1176,6 @@ export class AgentController {
       };
     }
 
-    /* --------------------------------------------------------------------- */
-    /* Step 9: keep ordinary GitHub search and file requests working.        */
-    /* --------------------------------------------------------------------- */
-    if (isExplicitGitHubFileReadRequest(request)) {
-      const github = toolByName.get("github");
-      if (!github) {
-        throw new Error(
-          "GitHub is required for this request, but the github tool is not registered.",
-        );
-      }
-
-      const fileRequest = extractGitHubFileRequest(request);
-      if (!fileRequest) {
-        throw new Error(
-          "I could not determine which GitHub repository and file to read.",
-        );
-      }
-
-      const githubArguments: Record<string, unknown> = {
-        action: "get_file",
-        repository: fileRequest.repository,
-        path: fileRequest.path,
-      };
-
-      emit({
-        type: "tool_call",
-        message: `GitHub is reading ${fileRequest.path}ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦`,
-        tool: "github",
-        arguments: githubArguments,
-      });
-
-      const result = await github.execute(githubArguments, {
-        files: request.files || [],
-        signal,
-      });
-
-      emit({
-        type: "tool_result",
-        message: result.ok
-          ? `GitHub returned ${fileRequest.path}.`
-          : `GitHub could not read ${fileRequest.path}.`,
-        tool: "github",
-        ok: result.ok,
-      });
-
-      if (!result.ok) throw new Error(result.content);
-      addSources(sources, result.sources);
-
-      contextMessages.push({
-        role: "user",
-        content:
-          `GITHUB FILE RESULT (${fileRequest.repository}/${fileRequest.path}):\n${result.content}\n\n` +
-          "Explain the requested file using only its actual contents. Do not invent details. Return a normal user-facing answer, not JSON.",
-      });
-
-      const raw = await this.model.complete(contextMessages, { signal });
-      finalAnswer = raw.trim();
-
-      emit({
-        type: "final",
-        message: "Isabella explained the GitHub file.",
-      });
-
-      return {
-        text: finalAnswer || result.content,
-        sources,
-        steps,
-        memoryWrites,
-        videoUrl,
-      };
-    }
-
     if (isExplicitGitHubSearchRequest(request)) {
       const github = toolByName.get("github");
       if (!github) {
@@ -880,7 +1197,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: "GitHub is searching repositoriesÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "GitHub is searching repositories…",
         tool: "github",
         arguments: githubArguments,
       });
@@ -937,7 +1254,7 @@ export class AgentController {
 
       emit({
         type: "tool_call",
-        message: "Higgsfield is generating your videoÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦",
+        message: "Higgsfield is generating your video…",
         tool: "higgsfield_video",
         arguments: videoArguments,
       });
@@ -960,7 +1277,7 @@ export class AgentController {
 
       if (!result.ok) throw new Error(result.content);
 
-      finalAnswer = "Done ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â I generated your video with Higgsfield.";
+      finalAnswer = "Done — I generated your video with Higgsfield.";
 
       emit({
         type: "final",
@@ -1033,7 +1350,7 @@ for (let iteration = 0; iteration < maxSteps; iteration += 1) {
 
       emit({
         type: "tool_call",
-        message: `${tool.name} is workingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦`,
+        message: `${tool.name} is working…`,
         tool: tool.name,
         arguments: arguments_,
       });

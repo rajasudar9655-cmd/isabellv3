@@ -1034,27 +1034,131 @@ export const githubTool: ToolDefinition = {
         case "get_file": {
           const repository = clean(arguments_.repository);
           const path = normalizeRepoPath(clean(arguments_.path));
-          const ref = clean(arguments_.ref);
+          const requestedRef = clean(arguments_.ref);
           const parts = repoParts(repository);
 
-          if (!parts) return { ok: false, content: "repository must use owner/name format." };
-          if (!path) return { ok: false, content: "GitHub get_file requires a path." };
+          if (!parts) {
+            return {
+              ok: false,
+              content: "repository must use owner/name format.",
+            };
+          }
 
-          const query = ref ? `?ref=${encodeQuery(ref)}` : "";
-          const filePath = path
+          if (!path) {
+            return {
+              ok: false,
+              content: "GitHub get_file requires a path.",
+            };
+          }
+
+          // Resolve the repository's actual default branch when the caller
+          // does not provide one. This avoids relying on a hard-coded branch.
+          let ref = requestedRef;
+
+          if (!ref) {
+            const repoInfo = await githubFetch(
+              `/repos/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.name)}`,
+              context.signal,
+            );
+
+            if (!repoInfo.response.ok) {
+              return {
+                ok: false,
+                content: apiError(repoInfo.response.status, repoInfo.data),
+              };
+            }
+
+            const repoData = repoInfo.data as {
+              default_branch?: unknown;
+            };
+
+            ref =
+              typeof repoData.default_branch === "string" &&
+              repoData.default_branch.trim()
+                ? repoData.default_branch.trim()
+                : "main";
+          }
+
+          const encodedPath = path
             .split("/")
             .filter(Boolean)
             .map(encodeURIComponent)
             .join("/");
 
-          const { response, data } = await githubFetch(
-            `/repos/${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.name)}/contents/${filePath}${query}`,
+          const contentsPath =
+            `/repos/${encodeURIComponent(parts.owner)}` +
+            `/${encodeURIComponent(parts.name)}` +
+            `/contents/${encodedPath}` +
+            `?ref=${encodeQuery(ref)}`;
+
+          let { response, data } = await githubFetch(
+            contentsPath,
             context.signal,
           );
 
-          if (!response.ok) return { ok: false, content: apiError(response.status, data) };
+          // Fallback to raw.githubusercontent.com for public files when the
+          // Contents API cannot resolve the path.
+          if (response.status === 404) {
+            const rawPath = path
+              .split("/")
+              .filter(Boolean)
+              .map(encodeURIComponent)
+              .join("/");
+
+            const rawUrl =
+              `https://raw.githubusercontent.com/${repository}/` +
+              `${encodeURIComponent(ref)}/${rawPath}`;
+
+            const rawResponse = await fetch(rawUrl, {
+              signal: context.signal,
+              headers: {
+                "User-Agent": "Isabella-AI/1.0",
+              },
+            });
+
+            if (rawResponse.ok) {
+              const rawContent = normalizeText(await rawResponse.text());
+              const truncated =
+                rawContent.length > GET_FILE_MAX_RETURNED_CHARS;
+              const returnedContent = rawContent.slice(
+                0,
+                GET_FILE_MAX_RETURNED_CHARS,
+              );
+              const url =
+                `https://github.com/${repository}/blob/${encodeURIComponent(ref)}/${path}`;
+
+              return {
+                ok: true,
+                content:
+                  `File: ${repository}/${path}\n` +
+                  `Ref: ${ref}\n` +
+                  `URL: ${url}\n\n` +
+                  returnedContent,
+                sources: [source(`${repository}/${path}`, url)],
+                metadata: {
+                  provider: "github",
+                  action,
+                  repository,
+                  path,
+                  ref,
+                  fallback: "raw.githubusercontent.com",
+                  truncated,
+                  contentLength: rawContent.length,
+                  returnedContentLength: returnedContent.length,
+                },
+              };
+            }
+          }
+
+          if (!response.ok) {
+            return {
+              ok: false,
+              content: apiError(response.status, data),
+            };
+          }
 
           const item = data as any;
+
           if (item.type !== "file") {
             return {
               ok: false,
@@ -1063,6 +1167,7 @@ export const githubTool: ToolDefinition = {
           }
 
           let content = "";
+
           if (typeof item.content === "string") {
             content = Buffer.from(item.content, "base64").toString("utf8");
           } else if (item.download_url) {
@@ -1070,30 +1175,37 @@ export const githubTool: ToolDefinition = {
               signal: context.signal,
               headers: { "User-Agent": "Isabella-AI/1.0" },
             });
+
             if (!downloaded.ok) {
               return {
                 ok: false,
-                content: `GitHub file download returned HTTP ${downloaded.status}.`,
+                content:
+                  `GitHub file download returned HTTP ${downloaded.status}.`,
               };
             }
+
             content = await downloaded.text();
           }
 
-          const url = String(
-            item.html_url || safeUrl(repository, "blob", ref || "HEAD", path),
-          );
-          const sha = typeof item.sha === "string" ? item.sha : "";
-          const truncated = content.length > GET_FILE_MAX_RETURNED_CHARS;
-          const returnedContent = normalizeText(content).slice(
+          const normalized = normalizeText(content);
+          const truncated =
+            normalized.length > GET_FILE_MAX_RETURNED_CHARS;
+          const returnedContent = normalized.slice(
             0,
             GET_FILE_MAX_RETURNED_CHARS,
           );
+
+          const url = String(
+            item.html_url ||
+              `https://github.com/${repository}/blob/${encodeURIComponent(ref)}/${path}`,
+          );
+          const sha = typeof item.sha === "string" ? item.sha : "";
 
           return {
             ok: true,
             content:
               `File: ${repository}/${path}\n` +
-              `Ref: ${ref || "default branch"}\n` +
+              `Ref: ${ref}\n` +
               `SHA: ${sha || "unknown"}\n` +
               `URL: ${url}\n\n` +
               returnedContent,
@@ -1103,10 +1215,11 @@ export const githubTool: ToolDefinition = {
               action,
               repository,
               path,
+              ref,
               sha,
               url,
               truncated,
-              contentLength: content.length,
+              contentLength: normalized.length,
               returnedContentLength: returnedContent.length,
             },
           };

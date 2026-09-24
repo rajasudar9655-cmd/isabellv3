@@ -38,6 +38,33 @@ function isRetryableStatus(status: number): boolean {
   return [429, 500, 502, 503, 504].includes(status);
 }
 
+function retryAfterMs(response: Response): number | null {
+  const value = response.headers.get("retry-after")?.trim();
+
+  if (!value) {
+    return null;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(30_000, seconds * 1000);
+  }
+
+  const dateMs = Date.parse(value);
+  if (Number.isFinite(dateMs)) {
+    return Math.min(30_000, Math.max(0, dateMs - Date.now()));
+  }
+
+  return null;
+}
+
+function backoffDelayMs(attempt: number): number {
+  const base = 1_000 * 2 ** attempt;
+  const capped = Math.min(base, 8_000);
+  const jitter = Math.floor(Math.random() * 251);
+  return capped + jitter;
+}
+
 async function wait(
   ms: number,
   signal?: AbortSignal,
@@ -47,18 +74,33 @@ async function wait(
   }
 
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
+    let settled = false;
 
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(
-        new Error("The model request was cancelled."),
-      );
+    const cleanup = () => {
+      signal?.removeEventListener("abort", onAbort);
     };
 
-    signal?.addEventListener("abort", onAbort, {
-      once: true,
-    });
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error("The model request was cancelled."));
+    };
+
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    if (signal?.aborted) {
+      clearTimeout(timer);
+      onAbort();
+    }
   });
 }
 
@@ -95,7 +137,9 @@ export class OpenAICompatibleProvider
       );
     }
 
-    const maxRetries = 3;
+    // Give temporary provider overloads more time to recover.
+    // Total backoff before the final attempt is roughly 15 seconds.
+    const maxRetries = 4;
 
     for (
       let attempt = 0;
@@ -170,7 +214,8 @@ export class OpenAICompatibleProvider
           attempt < maxRetries
         ) {
           const delay =
-            700 * 2 ** attempt;
+            retryAfterMs(response) ??
+            backoffDelayMs(attempt);
 
           await wait(
             delay,
@@ -193,13 +238,12 @@ export class OpenAICompatibleProvider
           );
         }
 
-        // Retry temporary network failures.
+        // Retry temporary network failures with the same backoff strategy.
         if (
           error instanceof TypeError &&
           attempt < maxRetries
         ) {
-          const delay =
-            700 * 2 ** attempt;
+          const delay = backoffDelayMs(attempt);
 
           await wait(
             delay,

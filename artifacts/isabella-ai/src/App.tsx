@@ -97,6 +97,7 @@ type Preferences = {
 
 type PluginId =
   | 'web-search'
+  | 'wikipedia'
   | 'code-interpreter'
   | 'file-analyzer'
   | 'calculator'
@@ -135,7 +136,7 @@ type Plugin = {
 
 const PLUGIN_STORAGE_KEY = 'isabella-enabled-plugins';
 const PLUGIN_VERSION_KEY = 'isabella-plugin-version';
-const CURRENT_PLUGIN_VERSION = 4;
+const CURRENT_PLUGIN_VERSION = 5;
 
 const availablePlugins: Plugin[] = [
   {
@@ -143,6 +144,14 @@ const availablePlugins: Plugin[] = [
     name: 'Web Research',
     description: 'Search and inspect public web sources',
     icon: Search,
+    enabled: true,
+    status: 'ready',
+  },
+  {
+    id: 'wikipedia',
+    name: 'Wikipedia',
+    description: 'Search Wikipedia and read encyclopedia articles',
+    icon: BookOpen,
     enabled: true,
     status: 'ready',
   },
@@ -284,6 +293,7 @@ function getInitialEnabledPlugins(): PluginId[] {
     const migrated = Array.from(
       new Set([
         ...stored,
+        'wikipedia' as PluginId,
         'huggingface' as PluginId,
         'higgsfield-video' as PluginId,
         'github' as PluginId,
@@ -419,6 +429,7 @@ async function streamAgent(
       text: string;
       sources: Source[];
       memoryWrites: MemoryItem[];
+      videoUrl?: string;
     } | null;
   } = {
     value: null,
