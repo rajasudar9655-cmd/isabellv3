@@ -160,30 +160,44 @@ function isExplicitWikipediaRequest(request: AgentRequest): boolean {
 function extractWikipediaQuery(request: AgentRequest): string {
   const normalized = lastUserMessage(request).replace(/\s+/g, " ").trim();
 
+  // Handle the common forms first so words such as "for" never leak into
+  // the actual Wikipedia query.
   const patterns = [
-    /\barticle\s+about\s+(.+?)(?:\s+and\s+(?:summari[sz]e|give|tell)|[.!?]|$)/i,
-    /\bsearch\s+(?:for\s+)?(.+?)(?:\s+and\s+(?:give|summari[sz]e|tell)|[.!?]|$)/i,
-    /\bfind\s+(?:the\s+)?(?:article\s+)?(?:about\s+)?(.+?)(?:\s+and\s+(?:summari[sz]e|give|tell)|[.!?]|$)/i,
+    /\bsearch\s+Wikipedia\s+for\s+(.+?)(?:\s+and\s+(?:give|tell|summari[sz]e)|[.!?]|$)/i,
+    /\bsearch\s+for\s+(.+?)(?:\s+and\s+(?:give|tell|summari[sz]e)|[.!?]|$)/i,
+    /\bfind\s+(?:the\s+)?(?:Wikipedia\s+)?(?:article\s+)?(?:about|on|for)\s+(.+?)(?:\s+and\s+(?:give|tell|summari[sz]e)|[.!?]|$)/i,
+    /\b(?:read|summari[sz]e|tell\s+me\s+about)\s+(?:the\s+)?(?:Wikipedia\s+)?(?:article\s+)?(?:about|on)?\s*(.+?)(?:\s+and\s+(?:explain|give|tell|summari[sz]e)|\s+using\s+Wikipedia|[.!?]|$)/i,
+    /\barticle\s+(?:about|on)\s+(.+?)(?:\s+and\s+(?:give|tell|summari[sz]e)|[.!?]|$)/i,
+    /\buse\s+Wikipedia\s+to\s+(?:tell\s+me\s+about|read|summari[sz]e)\s+(.+?)[.!?]?$/i,
   ];
 
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
-    if (match?.[1]) {
-      const query = match[1]
-        .replace(/^the\s+/i, "")
-        .replace(/\bWikipedia\b/gi, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (query) return query;
-    }
+    if (!match?.[1]) continue;
+
+    const query = match[1]
+      .replace(/^the\s+/i, "")
+      .replace(/^for\s+/i, "")
+      .replace(/\s+using\s+Wikipedia\s*$/i, "")
+      .replace(/\s+on\s+Wikipedia\s*$/i, "")
+      .replace(/\bWikipedia\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (query) return query;
   }
 
+  // Conservative fallback for simple requests.
   return normalized
-    .replace(/\buse\s+wikipedia\b/gi, "")
+    .replace(/^use\s+Wikipedia\s+to\s+/i, "")
+    .replace(/^search\s+Wikipedia\s+for\s+/i, "")
+    .replace(/^search\s+for\s+/i, "")
+    .replace(/^find\s+/i, "")
+    .replace(/^read\s+/i, "")
     .replace(/\bwikipedia\b/gi, "")
-    .replace(/\b(search|find|look\s*up|read|summari[sz]e|tell\s+me\s+about)\b/gi, "")
-    .replace(/\b(the\s+)?article\s+(about|on)\b/gi, "")
+    .replace(/\b(the\s+)?article\s+(about|on|for)\b/gi, "")
     .replace(/\b(and\s+)?(give|tell|summari[sz]e)\b.*$/i, "")
+    .replace(/\s+using\s+Wikipedia\s*$/i, "")
     .replace(/\s+/g, " ")
     .replace(/^[,.:;\s]+|[,.:;\s]+$/g, "")
     .trim();
@@ -560,6 +574,11 @@ export class AgentController {
   ): Promise<AgentResult> {
     const requestedPlugins = [...(request.plugins || [])];
 
+    const needsWikipedia = isExplicitWikipediaRequest(request);
+    if (needsWikipedia && !requestedPlugins.includes("wikipedia")) {
+      requestedPlugins.push("wikipedia");
+    }
+
     const needsGitHub =
       isExplicitGitHubSearchRequest(request) ||
       isExplicitGitHubFileReadRequest(request) ||
@@ -617,7 +636,10 @@ export class AgentController {
     /* --------------------------------------------------------------------- */
     /* Step 9: keep ordinary GitHub search and file requests working.        */
     /* --------------------------------------------------------------------- */
-    if (isExplicitGitHubFileReadRequest(request)) {
+    if (
+      isExplicitGitHubFileReadRequest(request) &&
+      !isReadmeProjectExplanationRequest(request)
+    ) {
       const github = toolByName.get("github");
       if (!github) {
         throw new Error(
