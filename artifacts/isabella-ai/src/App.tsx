@@ -78,6 +78,7 @@ type Message = {
   sources?: Source[];
   files?: UploadedFile[];
   videoUrl?: string;
+  plugin?: PluginId;
 };
 
 type Conversation = {
@@ -356,6 +357,7 @@ async function streamAgent(
   mode: Mode,
   enabledPluginIds: PluginId[] = [],
   files: UploadedFile[] = [],
+  selectedPluginId?: PluginId,
   onStep?: (step: AgentStep) => void,
 ): Promise<{
   text: string;
@@ -380,7 +382,16 @@ async function streamAgent(
     },
     body: JSON.stringify({
       mode,
-      plugins: enabledPluginIds,
+      // An @-selected plugin is added to the normal enabled plugin set
+      // for this message only. Global plugin settings remain unchanged.
+      plugins: selectedPluginId
+        ? Array.from(
+            new Set([
+              ...enabledPluginIds,
+              selectedPluginId,
+            ]),
+          )
+        : enabledPluginIds,
       messages: history.map(({ role, text }) => ({
         role,
         content: text,
@@ -425,13 +436,13 @@ async function streamAgent(
   let buffer = '';
 
   const finalResultState: {
-    value: {
-      text: string;
-      sources: Source[];
-      memoryWrites: MemoryItem[];
-      videoUrl?: string;
-    } | null;
-  } = {
+  value: {
+    text: string;
+    sources: Source[];
+    memoryWrites: MemoryItem[];
+    videoUrl?: string;
+  } | null;
+} = {
     value: null,
   };
 
@@ -518,12 +529,14 @@ async function askIsabella(
   mode: Mode,
   enabledPluginIds: PluginId[] = [],
   files: UploadedFile[] = [],
+  selectedPluginId?: PluginId,
 ) {
   return streamAgent(
     history,
     mode,
     enabledPluginIds,
     files,
+    selectedPluginId,
   );
 }
 
@@ -965,7 +978,11 @@ function Composer({
   onRemoveFile,
   attachedFiles,
 }: {
-  onSend: (text: string, mode: Mode) => void;
+  onSend: (
+    text: string,
+    mode: Mode,
+    pluginId?: PluginId,
+  ) => void;
   selectedMode: Mode;
   onMode: (mode: Mode) => void;
   onLongPressVoice?: () => void;
@@ -974,6 +991,10 @@ function Composer({
   attachedFiles?: UploadedFile[];
 }) {
   const [value, setValue] = useState('');
+  const [selectedPlugin, setSelectedPlugin] =
+    useState<PluginId | null>(null);
+  const [highlightedPluginIndex, setHighlightedPluginIndex] =
+    useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<number | null>(null);
   const longPressTriggered = useRef(false);
@@ -987,10 +1008,59 @@ function Composer({
     'Solve',
   ];
 
+  // Open the picker when @ starts the active mention token at the end
+  // of the composer. Typing @g, @git, @wiki, etc. filters the list.
+  const mentionMatch = value.match(/(^|\s)@([^\s]*)$/);
+  const pluginQuery = mentionMatch?.[2] || '';
+  const pluginOptions = availablePlugins.filter(
+    (plugin) =>
+      plugin.status === 'ready' &&
+      (plugin.name
+        .toLowerCase()
+        .includes(pluginQuery.toLowerCase()) ||
+        plugin.id
+          .toLowerCase()
+          .includes(pluginQuery.toLowerCase())),
+  );
+  const pluginMenuOpen = Boolean(
+    mentionMatch && pluginOptions.length,
+  );
+
+  const selectedPluginInfo = selectedPlugin
+    ? availablePlugins.find(
+        (plugin) => plugin.id === selectedPlugin,
+      )
+    : undefined;
+
+  const selectPlugin = (pluginId: PluginId) => {
+    setSelectedPlugin(pluginId);
+    setHighlightedPluginIndex(0);
+
+    // Remove only the active @query token and leave the rest
+    // of the user's text untouched.
+    setValue((current) => {
+      const withoutMention = current
+        .replace(/@[^\s]*$/, '')
+        .trimEnd();
+
+      return withoutMention ? `${withoutMention} ` : '';
+    });
+  };
+
+  const clearPluginSelection = () => {
+    setSelectedPlugin(null);
+    setHighlightedPluginIndex(0);
+  };
+
   const submit = () => {
     if (value.trim() || attachedFiles?.length) {
-      onSend(value.trim(), selectedMode);
+      onSend(
+        value.trim(),
+        selectedMode,
+        selectedPlugin || undefined,
+      );
       setValue('');
+      clearPluginSelection();
     }
   };
 
@@ -1043,7 +1113,170 @@ function Composer({
 
   return (
     <div className="composer-wrap">
-      <div className="composer">
+      {selectedPluginInfo ? (
+        <div
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 7,
+            marginBottom: 8,
+            padding: '6px 10px',
+            border: '1px solid rgba(145, 118, 94, 0.18)',
+            borderRadius: 999,
+            background: 'rgba(255, 255, 255, 0.72)',
+            color: '#5f5148',
+            fontSize: 12,
+          }}
+        >
+          <span style={{ fontWeight: 700 }}>
+            @{selectedPluginInfo.name}
+          </span>
+          <button
+            type="button"
+            onClick={clearPluginSelection}
+            aria-label={`Remove ${selectedPluginInfo.name}`}
+            style={{
+              border: 0,
+              background: 'transparent',
+              cursor: 'pointer',
+              color: 'inherit',
+              padding: 0,
+              lineHeight: 1,
+              fontSize: 15,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      <div
+        className="composer"
+        style={{ position: 'relative' }}
+      >
+        {pluginMenuOpen ? (
+          <div
+            role="listbox"
+            aria-label="Plugin picker"
+            style={{
+              position: 'absolute',
+              left: 10,
+              right: 10,
+              bottom: 'calc(100% + 10px)',
+              zIndex: 40,
+              maxHeight: 340,
+              overflowY: 'auto',
+              padding: 8,
+              border: '1px solid rgba(145, 118, 94, 0.16)',
+              borderRadius: 18,
+              background: 'rgba(255, 252, 249, 0.98)',
+              boxShadow: '0 20px 50px rgba(72, 51, 37, 0.16)',
+              backdropFilter: 'blur(14px)',
+            }}
+          >
+            <div
+              style={{
+                padding: '7px 10px 8px',
+                color: '#827267',
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: 0.8,
+              }}
+            >
+              Plugins & tools
+            </div>
+
+            {pluginOptions.map((plugin, index) => {
+              const Icon = plugin.icon;
+              const active =
+                index === highlightedPluginIndex;
+
+              return (
+                <button
+                  type="button"
+                  key={plugin.id}
+                  role="option"
+                  aria-selected={active}
+                  onMouseEnter={() =>
+                    setHighlightedPluginIndex(index)
+                  }
+                  onClick={() => selectPlugin(plugin.id)}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 11,
+                    padding: '10px 12px',
+                    border: 0,
+                    borderRadius: 12,
+                    background: active
+                      ? 'rgba(220, 201, 183, 0.26)'
+                      : 'transparent',
+                    color: '#3f3731',
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span
+                    style={{
+                      display: 'grid',
+                      placeItems: 'center',
+                      width: 32,
+                      height: 32,
+                      borderRadius: 10,
+                      background: 'rgba(255,255,255,0.84)',
+                      border:
+                        '1px solid rgba(145,118,94,0.12)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Icon size={15} />
+                  </span>
+
+                  <span
+                    style={{
+                      minWidth: 0,
+                      flex: 1,
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'block',
+                        fontWeight: 700,
+                        fontSize: 13,
+                      }}
+                    >
+                      @{plugin.name}
+                    </span>
+                    <span
+                      style={{
+                        display: 'block',
+                        marginTop: 2,
+                        color: '#8a7b70',
+                        fontSize: 11,
+                        lineHeight: 1.35,
+                      }}
+                    >
+                      {plugin.description}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+
+            <div
+              style={{
+                padding: '7px 10px 2px',
+                color: '#9a8b80',
+                fontSize: 10,
+              }}
+            >
+              Enter to select · ↑ ↓ to navigate · Esc to close
+            </div>
+          </div>
+        ) : null}
+
         <button
           className="icon-button"
           aria-label="Attach file"
@@ -1064,9 +1297,61 @@ function Composer({
 
         <textarea
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            setHighlightedPluginIndex(0);
+          }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (pluginMenuOpen) {
+              if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setHighlightedPluginIndex((current) =>
+                  Math.min(
+                    current + 1,
+                    pluginOptions.length - 1,
+                  ),
+                );
+                return;
+              }
+
+              if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setHighlightedPluginIndex((current) =>
+                  Math.max(current - 1, 0),
+                );
+                return;
+              }
+
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setValue((current) =>
+                  current
+                    .replace(/@[^\s]*$/, '')
+                    .trimEnd(),
+                );
+                setHighlightedPluginIndex(0);
+                return;
+              }
+
+              if (
+                event.key === 'Enter' &&
+                !event.shiftKey
+              ) {
+                event.preventDefault();
+                const plugin =
+                  pluginOptions[highlightedPluginIndex];
+
+                if (plugin) {
+                  selectPlugin(plugin.id);
+                }
+                return;
+              }
+            }
+
+            if (
+              event.key === 'Enter' &&
+              !event.shiftKey
+            ) {
               event.preventDefault();
               submit();
             }
@@ -2043,6 +2328,12 @@ function Chat() {
   const [attachedFiles, setAttachedFiles] =
     useState<UploadedFile[]>([]);
 
+  const messageListRef =
+    useRef<HTMLDivElement>(null);
+
+  const shouldStickToBottomRef =
+    useRef(true);
+
   useEffect(() => {
     const pending =
       readStore<{
@@ -2091,6 +2382,18 @@ function Chat() {
     );
   }, [conversations]);
 
+  useEffect(() => {
+    const container = messageListRef.current;
+    if (!container || !shouldStickToBottomRef.current) {
+      return;
+    }
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: busy ? 'auto' : 'smooth',
+    });
+  }, [messages, agentSteps, busy]);
+
   async function handleFileUpload(
     files: File[],
   ) {
@@ -2122,6 +2425,7 @@ function Chat() {
   async function send(
     text: string,
     selected: Mode,
+    selectedPluginId?: PluginId,
   ) {
     const enabledPlugins =
       getEnabledPlugins();
@@ -2142,6 +2446,7 @@ function Chat() {
       role: 'user',
       text,
       files: filesToSend,
+      plugin: selectedPluginId,
     };
 
     const history = [
@@ -2165,6 +2470,7 @@ function Chat() {
           selected,
           enabledPlugins,
           filesToSend,
+          selectedPluginId,
           (step) =>
             setAgentSteps(
               (current) => [
@@ -2362,7 +2668,21 @@ function Chat() {
         </div>
       </div>
 
-      <div className="message-list" aria-live="polite">
+      <div
+        ref={messageListRef}
+        className="message-list"
+        aria-live="polite"
+        onScroll={(event) => {
+          const container = event.currentTarget;
+          const distanceFromBottom =
+            container.scrollHeight -
+            container.scrollTop -
+            container.clientHeight;
+
+          shouldStickToBottomRef.current =
+            distanceFromBottom < 80;
+        }}
+      >
         {!messages.length && !busy && (
           <div className="empty-state">
             <Sparkles size={26} />
@@ -2385,6 +2705,33 @@ function Chat() {
             </span>
 
             <div>
+              {message.plugin ? (
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    marginBottom: 6,
+                    padding: '4px 8px',
+                    borderRadius: 999,
+                    border:
+                      '1px solid rgba(145, 118, 94, 0.16)',
+                    background:
+                      'rgba(255, 255, 255, 0.72)',
+                    color: '#6e5f55',
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  @{
+                    availablePlugins.find(
+                      (plugin) =>
+                        plugin.id === message.plugin,
+                    )?.name || message.plugin
+                  }
+                </div>
+              ) : null}
+
               <div className="message-bubble">
                 {message.text}
               </div>
